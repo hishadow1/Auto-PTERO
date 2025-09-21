@@ -38,12 +38,12 @@ install_panel() {
   echo -e "\n${BOLD}${BLUE}🚀 Starting Pterodactyl Panel Installation...${NC}\n"
   read -rp "🌐 Enter FQDN for Panel (leave empty to use server IP): " PANEL_FQDN
   SERVER_IP=$(get_ip)
-  log "Using server IP: $SERVER_IP"
+  PANEL_URL=${PANEL_FQDN:-$SERVER_IP}
+  log "Panel will be accessible at: $PANEL_URL"
 
-  # Basic deps
+  # Dependencies
   log "Installing dependencies..."
-  apt-get update -y && apt-get install -y \
-    software-properties-common curl ca-certificates gnupg lsb-release unzip git tar wget build-essential mariadb-server redis-server nginx ufw
+  apt-get update -y && apt-get install -y software-properties-common curl ca-certificates gnupg lsb-release unzip git tar wget build-essential mariadb-server redis-server nginx ufw
 
   # PHP
   add-apt-repository -y ppa:ondrej/php
@@ -96,13 +96,7 @@ install_panel() {
   sed -i "s|DB_DATABASE=.*|DB_DATABASE=${DB_NAME}|" .env
   sed -i "s|DB_USERNAME=.*|DB_USERNAME=${DB_USER}|" .env
   sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${DB_PASS}|" .env
-  if [ -n "${PANEL_FQDN:-}" ]; then
-    sed -i "s|APP_URL=.*|APP_URL=https://${PANEL_FQDN}|" .env
-    PANEL_URL="https://${PANEL_FQDN}"
-  else
-    sed -i "s|APP_URL=.*|APP_URL=https://${SERVER_IP}|" .env
-    PANEL_URL="https://${SERVER_IP}"
-  fi
+  sed -i "s|APP_URL=.*|APP_URL=https://${PANEL_URL}|" .env
 
   # Laravel setup
   log "Setting up Laravel..."
@@ -140,24 +134,22 @@ install_panel() {
   } > "$CRED_FILE"
   chmod 600 "$CRED_FILE"
 
-  # =======================
-  #   Nginx + SSL
-  # =======================
+  # Nginx + SSL
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/certs
 
   if [ -n "${PANEL_FQDN:-}" ]; then
     log "Attempting Let's Encrypt SSL..."
     apt-get install -y certbot python3-certbot-nginx
     if certbot --nginx -d "$PANEL_FQDN" --non-interactive --agree-tos -m "$ADMIN_EMAIL"; then
-      log "✅ Let's Encrypt SSL installed successfully."
+      log "✅ Let's Encrypt SSL installed."
     else
-      warn "Let's Encrypt failed. Using self-signed SSL."
+      warn "LE failed. Using self-signed SSL."
       openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
         -subj "/C=NA/ST=NA/L=NA/O=NA/CN=${PANEL_FQDN}" \
         -keyout /etc/certs/privkey.pem -out /etc/certs/fullchain.pem
     fi
   else
-    warn "No FQDN provided. Using self-signed SSL."
+    warn "No FQDN. Using self-signed SSL."
     openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
       -subj "/C=NA/ST=NA/L=NA/O=NA/CN=${SERVER_IP}" \
       -keyout /etc/certs/privkey.pem -out /etc/certs/fullchain.pem
@@ -167,13 +159,13 @@ install_panel() {
   cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
 server {
     listen 80;
-    server_name ${PANEL_FQDN:-$SERVER_IP};
+    server_name ${PANEL_URL};
     return 301 https://\$server_name\$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name ${PANEL_FQDN:-$SERVER_IP};
+    server_name ${PANEL_URL};
 
     ssl_certificate /etc/certs/fullchain.pem;
     ssl_certificate_key /etc/certs/privkey.pem;
@@ -200,6 +192,7 @@ EOF
   ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/
   nginx -t && systemctl reload nginx
 
+  # Final message
   echo -e "\n${BOLD}${GREEN}✅ Pterodactyl Panel Installed Successfully!${NC}"
   echo -e "${BOLD}Username:${NC} $ADMIN_USERNAME"
   echo -e "${BOLD}Email:   ${NC} $ADMIN_EMAIL"
