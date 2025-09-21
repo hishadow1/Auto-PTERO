@@ -2,7 +2,7 @@
 set -e
 
 # ================================
-# 🎨 Complete Loopable Pterodactyl Installer
+# 🎨 Complete Loopable Pterodactyl Installer with PHP 8.2 PPA
 # ================================
 
 # Colors
@@ -60,13 +60,22 @@ while true; do
             fi
 
             # ------------------------------
-            # System Update & Dependencies
+            # System Update & Dependencies with PHP 8.2 PPA
             # ------------------------------
             info "🔄 Updating system packages..."
             apt update -y && apt upgrade -y
 
+            info "📦 Installing software-properties-common and curl..."
+            apt install -y software-properties-common curl
+
+            info "🧩 Adding PHP PPA (Ondřej Surý) for PHP 8.2..."
+            add-apt-repository ppa:ondrej/php -y
+            apt update -y
+
             info "📦 Installing required dependencies..."
-            apt install -y software-properties-common curl apt-transport-https ca-certificates gnupg unzip git mariadb-server mariadb-client redis-server nginx lsb-release php8.2-cli php8.2-gd php8.2-mysql php8.2-pdo php8.2-mbstring php8.2-tokenizer php8.2-bcmath php8.2-xml php8.2-curl php8.2-fpm composer certbot python3-certbot-nginx ufw
+            apt install -y ca-certificates gnupg unzip git mariadb-server mariadb-client redis-server nginx lsb-release \
+php8.2-cli php8.2-gd php8.2-mysql php8.2-pdo php8.2-mbstring php8.2-tokenizer php8.2-bcmath php8.2-xml php8.2-curl php8.2-fpm \
+composer certbot python3-certbot-nginx ufw
 
             # Enable services
             for service in mariadb redis-server nginx php8.2-fpm; do
@@ -178,7 +187,7 @@ server {
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$script_name;
         include fastcgi_params;
     }
 }
@@ -200,7 +209,7 @@ NGINX
             fi
 
             # ------------------------------
-            # SSL Setup (Let’s Encrypt optional with auto-switch)
+            # SSL Setup (Let’s Encrypt optional)
             # ------------------------------
             if [[ "$SETUP_SSL" =~ ^[Yy]$ ]]; then
                 read -rp "🔑 Enter your domain for SSL: " DOMAIN
@@ -212,7 +221,7 @@ NGINX
                     ok "Let’s Encrypt SSL installed for $DOMAIN 🔒"
                 fi
 
-                # Update Nginx to use Let's Encrypt cert instead of self-signed
+                # Update Nginx to use Let's Encrypt cert
                 cat > "$PANEL_CONF" <<NGINX
 server {
     listen 80;
@@ -237,7 +246,7 @@ server {
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$script_name;
         include fastcgi_params;
     }
 }
