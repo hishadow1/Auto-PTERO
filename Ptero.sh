@@ -210,16 +210,19 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo -e "${BOLD}${BLUE}============================================${NC}"
-echo -e "${BOLD}${BLUE}🚀 Pterodactyl Installer${NC}"
-echo -e "${BOLD}${BLUE}============================================${NC}"
-echo -e "1️⃣  Install Pterodactyl Panel"
-echo -e "2️⃣  Quit"
-echo -e "============================================"
-read -rp "Enter choice [1-2]: " CHOICE
+while true; do
+  echo -e "${BOLD}${BLUE}============================================${NC}"
+  echo -e "${BOLD}${BLUE}🚀 Pterodactyl Installer${NC}"
+  echo -e "${BOLD}${BLUE}============================================${NC}"
+  echo -e "1️⃣  Install Pterodactyl Panel"
+  echo -e "2️⃣  Quit"
+  echo -e "============================================"
+  read -rp "Enter choice [1-2]: " CHOICE
+  CHOICE=$(echo "$CHOICE" | tr -d '[:space:]')  # remove spaces
 
-case "$CHOICE" in
-  1) install_panel ;;
-  2) echo -e "${YELLOW}Exiting...${NC}"; exit 0 ;;
-  *) err "Invalid choice!"; exit 1 ;;
-esac
+  case "$CHOICE" in
+    1) install_panel; break ;;
+    2) echo -e "${YELLOW}Exiting...${NC}"; exit 0 ;;
+    *) err "Invalid choice! Please enter 1 or 2." ;;
+  esac
+done
