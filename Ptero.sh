@@ -16,10 +16,18 @@ DB_INFO_FILE="/root/pterodactyl_db_info.txt"
 PHP_VERSION="8.1"
 
 # =======================
-#   UTILS
+#   COLORS & UTILS
 # =======================
-log() { echo -e "\e[92m[INFO]\e[0m $*"; }
-err() { echo -e "\e[91m[ERROR]\e[0m $*" >&2; }
+GREEN="\e[1;32m"
+RED="\e[1;31m"
+YELLOW="\e[1;33m"
+BLUE="\e[1;34m"
+BOLD="\e[1;1m"
+NC="\e[0m"
+
+log() { echo -e "${GREEN}[✔]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+err() { echo -e "${RED}[✖]${NC} $*" >&2; }
 generate_password() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14 || echo "Pter0Pass123"; }
 get_ip() { curl -s https://ipinfo.io/ip || hostname -I | awk '{print $1}'; }
 
@@ -27,13 +35,15 @@ get_ip() { curl -s https://ipinfo.io/ip || hostname -I | awk '{print $1}'; }
 #   PANEL INSTALLATION
 # =======================
 install_panel() {
-  log "=== Installing Pterodactyl Panel ==="
-  read -rp "Enter FQDN for Panel (leave empty to use server IP): " PANEL_FQDN
+  echo -e "\n${BOLD}${BLUE}🚀 Starting Pterodactyl Panel Installation...${NC}\n"
+  read -rp "🌐 Enter FQDN for Panel (leave empty to use server IP): " PANEL_FQDN
   SERVER_IP=$(get_ip)
+  log "Using server IP: $SERVER_IP"
 
   # Basic deps
+  log "Installing dependencies..."
   apt-get update -y && apt-get install -y \
-    software-properties-common curl ca-certificates gnupg lsb-release unzip git tar wget build-essential mariadb-server redis-server nginx ufw whiptail
+    software-properties-common curl ca-certificates gnupg lsb-release unzip git tar wget build-essential mariadb-server redis-server nginx ufw
 
   # PHP
   add-apt-repository -y ppa:ondrej/php
@@ -44,6 +54,7 @@ install_panel() {
 
   # Composer
   if ! command -v composer >/dev/null; then
+    log "Installing Composer..."
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
   fi
 
@@ -52,12 +63,14 @@ install_panel() {
   apt-get install -y nodejs yarn
 
   # Firewall
+  log "Configuring firewall..."
   ufw allow OpenSSH
   ufw allow 80/tcp
   ufw allow 443/tcp
   ufw --force enable
 
   # Clone panel
+  log "Cloning Pterodactyl Panel..."
   mkdir -p "$PTERO_DIR"
   git clone --depth 1 "$PTERO_REPO" "$PTERO_DIR"
   cd "$PTERO_DIR"
@@ -72,6 +85,7 @@ install_panel() {
   DB_USER="pterodactyl"
   DB_PASS=$(generate_password)
 
+  log "Creating database and user..."
   mysql -uroot -p"$MYSQL_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;"
   mysql -uroot -p"$MYSQL_ROOT_PASS" -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}'; GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;"
 
@@ -91,6 +105,7 @@ install_panel() {
   fi
 
   # Laravel setup
+  log "Setting up Laravel..."
   composer install --no-dev --optimize-autoloader
   php artisan key:generate --force
   php artisan migrate --seed --force
@@ -111,7 +126,7 @@ install_panel() {
     --password="$ADMIN_PASS" \
     --admin=1 --no-interaction || true
 
-  # Save credentials to file
+  # Save credentials
   {
     echo "======================================"
     echo "  Pterodactyl Panel Admin Credentials "
@@ -131,65 +146,34 @@ install_panel() {
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/certs
 
   if [ -n "${PANEL_FQDN:-}" ]; then
-    log "Attempting Let's Encrypt SSL setup..."
+    log "Attempting Let's Encrypt SSL..."
     apt-get install -y certbot python3-certbot-nginx
     if certbot --nginx -d "$PANEL_FQDN" --non-interactive --agree-tos -m "$ADMIN_EMAIL"; then
-      log "Let's Encrypt SSL installed successfully."
+      log "✅ Let's Encrypt SSL installed successfully."
     else
-      log "Let's Encrypt failed. Falling back to self-signed SSL."
+      warn "Let's Encrypt failed. Using self-signed SSL."
       openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
         -subj "/C=NA/ST=NA/L=NA/O=NA/CN=${PANEL_FQDN}" \
         -keyout /etc/certs/privkey.pem -out /etc/certs/fullchain.pem
-
-      cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
-server {
-    listen 80;
-    server_name ${PANEL_FQDN};
-    return 301 https://\$server_name\$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    server_name ${PANEL_FQDN};
-
-    ssl_certificate /etc/certs/fullchain.pem;
-    ssl_certificate_key /etc/certs/privkey.pem;
-
-    root ${PTERO_DIR}/public;
-    index index.php;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \.php\$ {
-        fastcgi_pass unix:/run/php/php${PHP_VERSION}-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}
-EOF
     fi
   else
-    log "No FQDN provided. Setting up self-signed SSL."
+    warn "No FQDN provided. Using self-signed SSL."
     openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
       -subj "/C=NA/ST=NA/L=NA/O=NA/CN=${SERVER_IP}" \
       -keyout /etc/certs/privkey.pem -out /etc/certs/fullchain.pem
+  fi
 
-    cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
+  # Nginx config
+  cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
 server {
     listen 80;
-    server_name ${SERVER_IP};
+    server_name ${PANEL_FQDN:-$SERVER_IP};
     return 301 https://\$server_name\$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name ${SERVER_IP};
+    server_name ${PANEL_FQDN:-$SERVER_IP};
 
     ssl_certificate /etc/certs/fullchain.pem;
     ssl_certificate_key /etc/certs/privkey.pem;
@@ -212,33 +196,37 @@ server {
     }
 }
 EOF
-  fi
 
   ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/
   nginx -t && systemctl reload nginx
 
-  # Final box
-  whiptail --title "✅ Pterodactyl Installed" \
-    --msgbox "Panel installed successfully!\n\nUsername: $ADMIN_USERNAME\nEmail: $ADMIN_EMAIL\nPassword: $ADMIN_PASS\nURL: $PANEL_URL\n\n💾 Saved to: $CRED_FILE" 18 70
+  echo -e "\n${BOLD}${GREEN}✅ Pterodactyl Panel Installed Successfully!${NC}"
+  echo -e "${BOLD}Username:${NC} $ADMIN_USERNAME"
+  echo -e "${BOLD}Email:   ${NC} $ADMIN_EMAIL"
+  echo -e "${BOLD}Password:${NC} $ADMIN_PASS"
+  echo -e "${BOLD}Panel:   ${NC} $PANEL_URL"
+  echo -e "${BOLD}Saved to:${NC} $CRED_FILE"
+  echo -e "======================================\n"
 }
 
 # =======================
-#   MAIN
+#   MAIN MENU
 # =======================
 if [ "$EUID" -ne 0 ]; then
-  err "Run as root"
+  err "Run as root!"
   exit 1
 fi
 
-apt-get update -y && apt-get install -y whiptail
+echo -e "${BOLD}${BLUE}============================================${NC}"
+echo -e "${BOLD}${BLUE}🚀 Pterodactyl Installer${NC}"
+echo -e "${BOLD}${BLUE}============================================${NC}"
+echo -e "1️⃣  Install Pterodactyl Panel"
+echo -e "2️⃣  Quit"
+echo -e "============================================"
+read -rp "Enter choice [1-2]: " CHOICE
 
-CHOICE=$(whiptail --title "🚀 Pterodactyl Installer" \
-  --menu "Choose what to install:" 15 60 4 \
-  "1" "Install Pterodactyl Panel" \
-  "2" "Quit" \
-  3>&1 1>&2 2>&3)
-
-case $CHOICE in
+case "$CHOICE" in
   1) install_panel ;;
-  2) exit 0 ;;
+  2) echo -e "${YELLOW}Exiting...${NC}"; exit 0 ;;
+  *) err "Invalid choice!"; exit 1 ;;
 esac
