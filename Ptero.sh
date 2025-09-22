@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 ######################################################################################
 # Auto Pterodactyl Installer - Self-contained (no lib.sh)                            #
@@ -13,30 +13,21 @@ openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
   -keyout privkey.pem -out fullchain.pem
 cd ~
 
-# --------------- Basic helper functions --------------- #
+# --------------- Helper functions --------------- #
 output() { echo -e "\033[1;36m[INFO]\033[0m $1"; }
 success() { echo -e "\033[1;32m[SUCCESS]\033[0m $1"; }
-error() { echo -e "\033[1;31m[ERROR]\033[0m $1"; }
+error()   { echo -e "\033[1;31m[ERROR]\033[0m $1"; }
 gen_passwd() { < /dev/urandom tr -dc A-Za-z0-9 | head -c"${1:-32}"; echo; }
 
 # ------------------ Variables ----------------- #
-
 FQDN="cold-rabbit-94.telebit.io"
 
-# MySQL
 MYSQL_DB="panel"
 MYSQL_USER="pterodactyl"
 MYSQL_PASSWORD="$(gen_passwd 64)"
 
-# Environment
 timezone="Europe/Stockholm"
 
-# SSL + Firewall
-ASSUME_SSL="true"
-CONFIGURE_LETSENCRYPT="true"
-CONFIGURE_FIREWALL="false"
-
-# Admin User
 email="admin@gmail.com"
 user_email="admin@gmail.com"
 user_username="admin"
@@ -44,7 +35,6 @@ user_firstname="admin"
 user_lastname="admin"
 user_password="admin"
 
-# Panel download URL (latest)
 PANEL_DL_URL="https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz"
 
 # --------- Functions -------- #
@@ -55,7 +45,8 @@ dep_install() {
   apt install -y software-properties-common curl wget unzip git lsb-release ca-certificates apt-transport-https gnupg
   LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
   apt update -y
-  apt install -y php8.1 php8.1-cli php8.1-gd php8.1-mysql php8.1-pdo php8.1-mbstring php8.1-bcmath php8.1-xml php8.1-fpm php8.1-curl \
+  apt install -y php8.1 php8.1-cli php8.1-gd php8.1-mysql php8.1-pdo php8.1-mbstring php8.1-bcmath \
+                 php8.1-xml php8.1-fpm php8.1-curl php8.1-zip php8.1-intl \
                  mariadb-server redis-server nginx certbot python3-certbot-nginx
   systemctl enable --now mariadb redis-server php8.1-fpm
   success "Dependencies installed!"
@@ -73,7 +64,7 @@ ptdl_dl() {
   cd /var/www/pterodactyl
   curl -Lo panel.tar.gz "$PANEL_DL_URL"
   tar -xzvf panel.tar.gz
-  chmod -R 755 storage/* bootstrap/cache/
+  chmod -R 755 storage bootstrap/cache
   cp .env.example .env
   success "Panel files downloaded!"
 }
@@ -210,7 +201,6 @@ EOF
 }
 
 # --------------- Main --------------- #
-
 perform_install() {
   output "Starting installation..."
   dep_install
