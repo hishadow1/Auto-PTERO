@@ -1,225 +1,151 @@
 #!/bin/bash
 
-# Modern Black Theme UI Color Definitions (optimized for dark terminals)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-WHITE='\033[1;37m'
-BOLD='\033[1m'
-NC='\033[0m'  # No Color
+set -e
 
-# Function to print styled header
-print_header() {
-    clear
-    echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║${WHITE}                        Pterodactyl Panel Installer                  ${CYAN}${BOLD}║${NC}"
-    echo -e "${CYAN}${BOLD}║${WHITE}                             Black Theme UI                           ${CYAN}${BOLD}║${NC}"
-    echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
+######################################################################################
+# Auto Pterodactyl Installer - Modified for Shadow                                    #
+######################################################################################
+
+# ---------------- Pre-setup SSL cert ---------------- #
+mkdir -p /etc/certs
+cd /etc/certs
+openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
+  -subj "/C=NA/ST=NA/L=NA/O=NA/CN=Generic SSL Certificate" \
+  -keyout privkey.pem -out fullchain.pem
+cd ~
+
+# ----------------------------------------------------- #
+
+fn_exists() { declare -F "$1" >/dev/null; }
+if ! fn_exists lib_loaded; then
+  source /tmp/lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
+  ! fn_exists lib_loaded && echo "* ERROR: Could not load lib script" && exit 1
+fi
+
+# ------------------ Variables ----------------- #
+
+# Domain name / IP
+FQDN="cold-rabbit-94.telebit.io"
+
+# Default MySQL credentials
+MYSQL_DB="panel"
+MYSQL_USER="pterodactyl"
+MYSQL_PASSWORD="$(gen_passwd 64)"
+
+# Environment
+timezone="Europe/Stockholm"
+
+# SSL and Firewall
+ASSUME_SSL="true"
+CONFIGURE_LETSENCRYPT="true"
+CONFIGURE_FIREWALL="false"
+
+# Admin User
+email="admin@gmail.com"
+user_email="admin@gmail.com"
+user_username="admin"
+user_firstname="admin"
+user_lastname="admin"
+user_password="admin"
+
+# --------- Main installation functions -------- #
+
+install_composer() {
+  output "Installing composer.."
+  curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+  success "Composer installed!"
 }
 
-# Function to print info message
-print_info() {
-    echo -e "${BLUE}${BOLD}[INFO]${NC} $1"
+ptdl_dl() {
+  output "Downloading pterodactyl panel files .. "
+  mkdir -p /var/www/pterodactyl
+  cd /var/www/pterodactyl || exit
+
+  curl -Lo panel.tar.gz "$PANEL_DL_URL"
+  tar -xzvf panel.tar.gz
+  chmod -R 755 storage/* bootstrap/cache/
+
+  cp .env.example .env
+
+  success "Downloaded pterodactyl panel files!"
 }
 
-# Function to print success message
-print_success() {
-    echo -e "${GREEN}${BOLD}[SUCCESS]${NC} $1"
+install_composer_deps() {
+  output "Installing composer dependencies.."
+  [ "$OS" == "rocky" ] || [ "$OS" == "almalinux" ] && export PATH=/usr/local/bin:$PATH
+  COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
+  success "Installed composer dependencies!"
 }
 
-# Function to print warning message
-print_warning() {
-    echo -e "${YELLOW}${BOLD}[WARNING]${NC} $1"
+configure() {
+  output "Configuring environment.."
+
+  local app_url="https://$FQDN"
+
+  php artisan key:generate --force
+
+  php artisan p:environment:setup \
+    --author="$email" \
+    --url="$app_url" \
+    --timezone="$timezone" \
+    --cache="redis" \
+    --session="redis" \
+    --queue="redis" \
+    --redis-host="localhost" \
+    --redis-pass="null" \
+    --redis-port="6379" \
+    --settings-ui=true \
+    --telemetry=true
+
+  php artisan p:environment:database \
+    --host="127.0.0.1" \
+    --port="3306" \
+    --database="$MYSQL_DB" \
+    --username="$MYSQL_USER" \
+    --password="$MYSQL_PASSWORD"
+
+  php artisan migrate --seed --force
+
+  php artisan p:user:make \
+    --email="$user_email" \
+    --username="$user_username" \
+    --name-first="$user_firstname" \
+    --name-last="$user_lastname" \
+    --password="$user_password" \
+    --admin=1
+
+  success "Configured environment!"
 }
 
-# Function to print error message and exit if critical
-print_error() {
-    echo -e "${RED}${BOLD}[ERROR]${NC} $1"
-    if [[ "$1" == *"Exiting"* ]]; then
-        exit 1
-    fi
-}
-
-# Function to generate random password (32 chars alphanumeric)
-generate_password() {
-    openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1
-}
-
-# Function to detect OS and version
-detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS="${ID,,}"  # Lowercase
-        VER="$VERSION_ID"
-        CODENAME="$VERSION_CODENAME"
-    elif command -v lsb_release >/dev/null 2>&1; then
-        OS=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
-        VER=$(lsb_release -sr)
-        CODENAME=$(lsb_release -sc)
-    else
-        print_error "Cannot detect OS. Supported: Ubuntu and Debian only. Exiting."
-    fi
-
-    if [[ "$OS" != "ubuntu" && "$OS" != "debian" ]]; then
-        print_error "Unsupported OS: $OS. Supported: Ubuntu and Debian only. Exiting."
-    fi
-
-    print_info "Detected OS: $OS $VER ($CODENAME)"
-}
-
-# Function to update system packages
-update_system() {
-    print_info "Updating package lists and upgrading system..."
-    apt update -y && apt upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-    print_success "System updated successfully."
-}
-
-# Function to install OS-specific dependencies
-install_dependencies() {
-    print_info "Installing required dependencies..."
-
-    # Install common tools
-    apt install -y software-properties-common curl wget git unzip lsb-release gnupg2 ca-certificates apt-transport-https
-
-    # Add PHP repository (ondrej/sury for Ubuntu, sury for Debian)
-    if [[ "$OS" == "ubuntu" ]]; then
-        add-apt-repository ppa:ondrej/php -y
-    else  # Debian
-        curl -sSL https://packages.sury.org/php/apt.gpg | apt-key add -
-        echo "deb https://packages.sury.org/php/ $CODENAME main" > /etc/apt/sources.list.d/php.list
-    fi
-    apt update
-
-    # Install Docker GPG key and repo
-    curl -fsSL https://download.docker.com/linux/"$OS"/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/$OS $CODENAME stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-    apt update
-
-    # Install core packages: Docker, MariaDB, Redis, Nginx, PHP 8.1, Composer
-    apt install -y \
-        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-        mariadb-server \
-        redis-server \
-        nginx-full \
-        php8.1 php8.1-cli php8.1-fpm php8.1-mysql php8.1-zip php8.1-gd php8.1-mbstring php8.1-curl php8.1-xml php8.1-bcmath php8.1-redis \
-        composer
-
-    # Start and enable services
-    systemctl start docker mariadb redis-server nginx php8.1-fpm
-    systemctl enable docker mariadb redis-server nginx php8.1-fpm
-
-    # Add user to docker group
-    usermod -aG docker www-data
-
-    print_success "Dependencies installed successfully."
-}
-
-# Function to secure MariaDB
-secure_mariadb() {
-    print_info "Securing MariaDB installation..."
-    mysql_secure_installation <<EOF
-
-y
-y
-y
-y
-y
-EOF
-    print_success "MariaDB secured."
-}
-
-# Function to create Pterodactyl database and user
-create_database() {
-    local db_pass=$1
-    print_info "Creating Pterodactyl database and user..."
-    mysql -u root -e "CREATE DATABASE IF NOT EXISTS pterodactyl; CREATE USER IF NOT EXISTS 'pterodactyl'@'localhost' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON pterodactyl.* TO 'pterodactyl'@'localhost'; FLUSH PRIVILEGES;"
-    print_success "Database 'pterodactyl' created with user 'pterodactyl'."
-}
-
-# Function to create self-signed certificate (as per request, executed before main script)
-create_self_signed_cert() {
-    print_info "Creating self-signed SSL certificate..."
-    mkdir -p /etc/certs
-    cd /etc/certs
-    openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/C=NA/ST=NA/L=NA/O=NA/CN=Generic SSL Certificate" -keyout privkey.pem -out fullchain.pem
-    cd /
-    print_success "Self-signed certificate created in /etc/certs/."
-}
-
-# Function to disable UFW (as per request)
-disable_ufw() {
-    print_info "Disabling UFW firewall..."
-    if command -v ufw >/dev/null 2>&1; then
-        ufw disable
-        print_success "UFW disabled."
-    else
-        print_warning "UFW not installed, skipping."
-    fi
-}
-
-# Function to setup Let's Encrypt if FQDN is valid domain
-setup_lets_encrypt() {
-    local fqdn=$1
-    print_info "Setting up Let's Encrypt SSL for $fqdn..."
-    apt install -y certbot python3-certbot-nginx
-    certbot --nginx -d "$fqdn" --non-interactive --agree-tos --email admin@gmail.com --redirect --hsts --staple-ocsp
-    print_success "Let's Encrypt certificate installed and configured for $fqdn."
-}
-
-# Function to configure Nginx for self-signed cert
-configure_nginx_self_signed() {
-    local fqdn=$1
-    print_info "Configuring Nginx with self-signed SSL for $fqdn..."
-    
-    # Remove default site
-    rm -f /etc/nginx/sites-enabled/default
-    
-    # Create Pterodactyl site config
-    cat > /etc/nginx/sites-available/pterodactyl <<EOF
+configure_nginx_fallback_ssl() {
+  output "Configuring Nginx fallback SSL.."
+  cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
 server {
     listen 80;
-    server_name $fqdn;
-    return 301 https://\$server_name\$request_uri;
+    server_name $FQDN;
+    return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name $fqdn;
+    server_name $FQDN;
 
     root /var/www/pterodactyl/public;
-    index index.php index.html;
+    index index.php;
 
-    ssl_certificate /etc/certs/fullchain.pem;
+    ssl_certificate     /etc/certs/fullchain.pem;
     ssl_certificate_key /etc/certs/privkey.pem;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-SHA384;
-    ssl_prefer_server_ciphers off;
-    ssl_session_cache shared:SSL:10m;
-
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
-
-    client_max_body_size 100M;
-    fastcgi_buffers 8 16k;
-    fastcgi_buffer_size 32k;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
-    location ~ \.php$ {
+    location ~ \.php\$ {
         fastcgi_pass unix:/run/php/php8.1-fpm.sock;
         fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param PATH_INFO \$fastcgi_path_info;
     }
 
     location ~ /\.ht {
@@ -228,165 +154,41 @@ server {
 }
 EOF
 
-    # Enable site
-    ln -sf /etc/nginx/sites-available/pterodactyl /etc/nginx/sites-enabled/
-    
-    # Test and reload Nginx
-    if nginx -t; then
-        systemctl reload nginx
-        print_success "Nginx configured with self-signed SSL."
-    else
-        print_error "Nginx configuration test failed. Exiting."
-    fi
+  ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
+  systemctl restart nginx
+  success "Fallback SSL configured!"
 }
 
-# Function to install Pterodactyl Panel
-install_pterodactyl() {
-    local fqdn=$1
-    local use_lets_encrypt=$2
+# --------------- Main functions --------------- #
 
-    print_info "Starting Pterodactyl Panel installation..."
+perform_install() {
+  output "Starting installation.. this might take a while!"
+  dep_install
+  install_composer
+  ptdl_dl
+  install_composer_deps
+  create_db_user "$MYSQL_USER" "$MYSQL_PASSWORD"
+  create_db "$MYSQL_DB" "$MYSQL_USER"
+  configure
+  set_folder_permissions
+  insert_cronjob
+  install_pteroq
+  configure_nginx_fallback_ssl
+  certbot --nginx --non-interactive --agree-tos --redirect --email "$email" -d "$FQDN" || true
 
-    # Generate passwords
-    DB_PASS=$(generate_password)
-    ADMIN_PASS=$(generate_password)
+  echo -e "\n==============================================="
+  echo -e " ✅ Pterodactyl Panel Installed Successfully!"
+  echo -e " 🌐 URL: https://$FQDN"
+  echo -e " 👤 Username: $user_username"
+  echo -e " 📧 Email: $user_email"
+  echo -e " 🔑 Password: $user_password"
+  echo -e " 📊 Telemetry: ENABLED"
+  echo -e " 🔐 SSL certs: /etc/certs/ (fallback) + Let's Encrypt (if successful)"
+  echo -e "===============================================\n"
 
-    # Create database
-    create_database "$DB_PASS"
-
-    # Download and extract Pterodactyl Panel
-    cd /var/www
-    wget -O panel.tar.gz "https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz"
-    tar -xzf panel.tar.gz
-    chown -R www-data:www-data /var/www/pterodactyl/
-    chmod -R 755 /var/www/pterodactyl/
-    rm panel.tar.gz
-
-    # Install Composer dependencies
-    cd /var/www/pterodactyl
-    composer install --no-dev --optimize-autoloader --no-interaction
-
-    # Set permissions
-    chmod -R 755 storage/ bootstrap/cache
-
-    # Copy and configure environment
-    cp .env.example .env
-    php artisan key:generate --force
-
-    # Setup environment (app URL, cache, queue, debug, DB pass)
-    php artisan p:environment:setup <<EOF
-$fqdn
-1
-1
-0
-$DB_PASS
-EOF
-
-    # Run migrations and seed
-    php artisan migrate --seed --force
-
-    # Create admin user
-    php artisan p:user:make <<EOF
-admin
-admin
-admin
-admin@gmail.com
-EOF
-
-    # Set random password for admin (using tinker for proper hashing)
-    php artisan tinker --execute="
-\$user = App\\Models\\User ::where('email', 'admin@gmail.com')->first();
-\$user->password = Illuminate\\Support\\Facades\\Hash::make('$ADMIN_PASS');
-\$user->save();
-echo 'Admin password updated.';
-"
-
-    # Final permissions
-    chown -R www-data:www-data /var/www/pterodactyl/
-    chmod -R 755 /var/www/pterodactyl/storage /var/www/pterodactyl/bootstrap/cache
-
-    # Configure SSL based on choice
-    if [[ "$use_lets_encrypt" == "yes" ]]; then
-        setup_lets_encrypt "$fqdn"
-    else
-        configure_nginx_self_signed "$fqdn"
-    fi
-
-    print_success "Pterodactyl Panel installation completed!"
-
-    # Show user details
-    echo ""
-    echo -e "${CYAN}${BOLD}══════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${WHITE}${BOLD}Installation Summary:${NC}"
-    echo -e "${WHITE}Admin Username: admin${NC}"
-    echo -e "${WHITE}Admin First Name: admin${NC}"
-    echo -e "${WHITE}Admin Last Name: admin${NC}"
-    echo -e "${WHITE}Admin Email: admin@gmail.com${NC}"
-    echo -e "${WHITE}Admin Password: $ADMIN_PASS${NC}"
-    echo -e "${WHITE}Panel URL: https://$fqdn${NC}"
-    echo -e "${WHITE}Database: pterodactyl (user: pterodactyl, pass: $DB_PASS)${NC}"
-    echo -e "${CYAN}${BOLD}══════════════════════════════════════════════════════════════════════${NC}"
-    echo ""
-    print_info "Access the panel at https://$fqdn and login with the admin credentials above."
-    print_warning "For production, change the admin email and consider securing further."
+  return 0
 }
 
-# Function to show main menu
-show_menu() {
-    print_header
-    echo -e "${PURPLE}${BOLD}What would you like to install?${NC}"
-    echo ""
-    echo "1) Pterodactyl Panel"
-    echo "2) Exit"
-    echo ""
-    read -p "Enter your choice (1-2): " choice
-}
+# ------------------- Install ------------------ #
 
-# Main execution
-main() {
-    # Initial setup as per request (before main script logic)
-    create_self_signed_cert
-    disable_ufw
-
-    # Detect OS and proceed
-    detect_os
-    update_system
-    install_dependencies
-    secure_mariadb
-
-    # Show menu
-    show_menu
-
-    case "$choice" in
-        1)
-            echo ""
-            read -p "Enter your FQDN (e.g., panel.example.com): " fqdn
-            if [[ -z "$fqdn" ]]; then
-                print_error "FQDN is required. Exiting."
-                return
-            fi
-
-            # Detect if Let's Encrypt is needed (valid domain, not IP or localhost)
-            if [[ "$fqdn" =~ ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]] && [[ "$fqdn" != "localhost" ]] && ! [[ "$fqdn" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                use_lets_encrypt="yes"
-                print_info "Valid domain detected. Using Let's Encrypt SSL."
-            else
-                use_lets_encrypt="no"
-                print_warning "FQDN appears to be localhost/IP. Using self-signed SSL."
-            fi
-
-            install_pterodactyl "$fqdn" "$use_lets_encrypt"
-            ;;
-        2)
-            print_info "Exiting installer."
-            exit 0
-            ;;
-        *)
-            print_error "Invalid choice. Exiting."
-            exit 1
-            ;;
-    esac
-}
-
-# Run the script
-main "$@"
+perform_install
