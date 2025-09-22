@@ -61,11 +61,12 @@ PHP_VER=""
 if [[ "$OS" == "ubuntu" ]]; then
   case "$VER" in
     "20.04") PHP_VER="8.1"; add-apt-repository -y ppa:ondrej/php ;;
-    "22.04") PHP_VER="8.1" ;;
+    "22.04") PHP_VER="8.1" ;;  # PHP included
     "24.04") PHP_VER="8.3" ;;
     *) PHP_VER="8.1"; add-apt-repository -y ppa:ondrej/php ;;
   esac
 elif [[ "$OS" == "debian" ]]; then
+  # ✅ Debian must use Sury repo (not Ubuntu PPA)
   echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/sury-php.list
   wget -qO - https://packages.sury.org/php/apt.gpg | apt-key add -
   case "$VER" in
