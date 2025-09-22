@@ -1,9 +1,8 @@
 #!/bin/bash
-
 set -e
 
 ######################################################################################
-# Auto Pterodactyl Installer - Modified for Shadow                                    #
+# Auto Pterodactyl Installer - Self-contained (no lib.sh)                            #
 ######################################################################################
 
 # ---------------- Pre-setup SSL cert ---------------- #
@@ -14,20 +13,17 @@ openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
   -keyout privkey.pem -out fullchain.pem
 cd ~
 
-# ----------------------------------------------------- #
-
-fn_exists() { declare -F "$1" >/dev/null; }
-if ! fn_exists lib_loaded; then
-  source /tmp/lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
-  ! fn_exists lib_loaded && echo "* ERROR: Could not load lib script" && exit 1
-fi
+# --------------- Basic helper functions --------------- #
+output() { echo -e "\033[1;36m[INFO]\033[0m $1"; }
+success() { echo -e "\033[1;32m[SUCCESS]\033[0m $1"; }
+error() { echo -e "\033[1;31m[ERROR]\033[0m $1"; }
+gen_passwd() { < /dev/urandom tr -dc A-Za-z0-9 | head -c"${1:-32}"; echo; }
 
 # ------------------ Variables ----------------- #
 
-# Domain name / IP
 FQDN="cold-rabbit-94.telebit.io"
 
-# Default MySQL credentials
+# MySQL
 MYSQL_DB="panel"
 MYSQL_USER="pterodactyl"
 MYSQL_PASSWORD="$(gen_passwd 64)"
@@ -35,7 +31,7 @@ MYSQL_PASSWORD="$(gen_passwd 64)"
 # Environment
 timezone="Europe/Stockholm"
 
-# SSL and Firewall
+# SSL + Firewall
 ASSUME_SSL="true"
 CONFIGURE_LETSENCRYPT="true"
 CONFIGURE_FIREWALL="false"
@@ -48,45 +44,68 @@ user_firstname="admin"
 user_lastname="admin"
 user_password="admin"
 
-# --------- Main installation functions -------- #
+# Panel download URL (latest)
+PANEL_DL_URL="https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz"
+
+# --------- Functions -------- #
+
+dep_install() {
+  output "Installing dependencies..."
+  apt update -y
+  apt install -y software-properties-common curl wget unzip git lsb-release ca-certificates apt-transport-https gnupg
+  LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
+  apt update -y
+  apt install -y php8.1 php8.1-cli php8.1-gd php8.1-mysql php8.1-pdo php8.1-mbstring php8.1-bcmath php8.1-xml php8.1-fpm php8.1-curl \
+                 mariadb-server redis-server nginx certbot python3-certbot-nginx
+  systemctl enable --now mariadb redis-server php8.1-fpm
+  success "Dependencies installed!"
+}
 
 install_composer() {
-  output "Installing composer.."
+  output "Installing composer..."
   curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
   success "Composer installed!"
 }
 
 ptdl_dl() {
-  output "Downloading pterodactyl panel files .. "
+  output "Downloading Pterodactyl panel..."
   mkdir -p /var/www/pterodactyl
-  cd /var/www/pterodactyl || exit
-
+  cd /var/www/pterodactyl
   curl -Lo panel.tar.gz "$PANEL_DL_URL"
   tar -xzvf panel.tar.gz
   chmod -R 755 storage/* bootstrap/cache/
-
   cp .env.example .env
-
-  success "Downloaded pterodactyl panel files!"
+  success "Panel files downloaded!"
 }
 
 install_composer_deps() {
-  output "Installing composer dependencies.."
-  [ "$OS" == "rocky" ] || [ "$OS" == "almalinux" ] && export PATH=/usr/local/bin:$PATH
+  output "Installing composer dependencies..."
   COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
-  success "Installed composer dependencies!"
+  success "Composer dependencies installed!"
+}
+
+create_db_user() {
+  output "Creating MySQL user..."
+  mysql -u root -e "CREATE USER IF NOT EXISTS '$1'@'127.0.0.1' IDENTIFIED BY '$2';"
+  success "MySQL user created!"
+}
+
+create_db() {
+  output "Creating MySQL database..."
+  mysql -u root -e "CREATE DATABASE IF NOT EXISTS $1;"
+  mysql -u root -e "GRANT ALL PRIVILEGES ON $1.* TO '$2'@'127.0.0.1'; FLUSH PRIVILEGES;"
+  success "Database created!"
 }
 
 configure() {
-  output "Configuring environment.."
-
-  local app_url="https://$FQDN"
+  output "Configuring panel..."
+  cd /var/www/pterodactyl
 
   php artisan key:generate --force
 
   php artisan p:environment:setup \
     --author="$email" \
-    --url="$app_url" \
+    --url="https://$FQDN" \
     --timezone="$timezone" \
     --cache="redis" \
     --session="redis" \
@@ -114,11 +133,42 @@ configure() {
     --password="$user_password" \
     --admin=1
 
-  success "Configured environment!"
+  success "Panel configured!"
+}
+
+set_folder_permissions() {
+  chown -R www-data:www-data /var/www/pterodactyl
+  chmod -R 755 /var/www/pterodactyl/storage /var/www/pterodactyl/bootstrap/cache
+  success "Permissions set!"
+}
+
+insert_cronjob() {
+  (crontab -l 2>/dev/null; echo "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1") | crontab -
+  success "Cronjob added!"
+}
+
+install_pteroq() {
+  cat > /etc/systemd/system/pteroq.service <<EOF
+[Unit]
+Description=Pterodactyl Queue Worker
+After=redis-server.service
+
+[Service]
+User=www-data
+Group=www-data
+Restart=always
+ExecStart=/usr/bin/php /var/www/pterodactyl/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl enable --now pteroq
+  success "pteroq service installed!"
 }
 
 configure_nginx_fallback_ssl() {
-  output "Configuring Nginx fallback SSL.."
+  output "Configuring Nginx with fallback SSL..."
   cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
 server {
     listen 80;
@@ -156,13 +206,13 @@ EOF
 
   ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
   systemctl restart nginx
-  success "Fallback SSL configured!"
+  success "Nginx configured!"
 }
 
-# --------------- Main functions --------------- #
+# --------------- Main --------------- #
 
 perform_install() {
-  output "Starting installation.. this might take a while!"
+  output "Starting installation..."
   dep_install
   install_composer
   ptdl_dl
@@ -185,10 +235,6 @@ perform_install() {
   echo -e " 📊 Telemetry: ENABLED"
   echo -e " 🔐 SSL certs: /etc/certs/ (fallback) + Let's Encrypt (if successful)"
   echo -e "===============================================\n"
-
-  return 0
 }
-
-# ------------------- Install ------------------ #
 
 perform_install
