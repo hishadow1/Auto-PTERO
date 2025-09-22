@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pterodactyl Installer - Works on Debian 10/11/12 + Ubuntu 20.04/22.04/24.04
+# Pterodactyl Installer - Debian 10/11/12 + Ubuntu 20.04/22.04/24.04
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -66,22 +66,13 @@ if [[ "$OS" == "ubuntu" ]]; then
     *) PHP_VER="8.1"; add-apt-repository -y ppa:ondrej/php ;;
   esac
 elif [[ "$OS" == "debian" ]]; then
+  echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/sury-php.list
+  wget -qO - https://packages.sury.org/php/apt.gpg | apt-key add -
   case "$VER" in
-    "10") # Buster = PHP 7.3 by default (too old)
-      PHP_VER="8.0"
-      echo "deb https://packages.sury.org/php/ buster main" > /etc/apt/sources.list.d/sury-php.list
-      wget -qO - https://packages.sury.org/php/apt.gpg | apt-key add -
-      ;;
-    "11") # Bullseye = PHP 7.4 by default (too old)
-      PHP_VER="8.1"
-      echo "deb https://packages.sury.org/php/ bullseye main" > /etc/apt/sources.list.d/sury-php.list
-      wget -qO - https://packages.sury.org/php/apt.gpg | apt-key add -
-      ;;
-    "12") PHP_VER="8.2" ;; # Bookworm ships PHP 8.2
-    *) PHP_VER="8.1"
-       echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/sury-php.list
-       wget -qO - https://packages.sury.org/php/apt.gpg | apt-key add -
-       ;;
+    "10") PHP_VER="8.0" ;;  # Buster
+    "11") PHP_VER="8.1" ;;  # Bullseye
+    "12") PHP_VER="8.2" ;;  # Bookworm
+    *)    PHP_VER="8.1" ;;
   esac
 fi
 
